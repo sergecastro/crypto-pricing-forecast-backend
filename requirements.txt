@@ -1,4 +1,4 @@
-echo fastapi==0.116.1 > requirements.txt
-echo uvicorn==0.24.0 >> requirements.txt
-echo httpx==0.28.1 >> requirements.txt
-echo python-dotenv==1.0.0 >> requirements.txt
+fastapi==0.116.1
+uvicorn==0.24.0
+httpx==0.28.1
+python-dotenv==1.0.0
