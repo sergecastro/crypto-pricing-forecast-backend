@@ -1,12 +1,19 @@
-from fastapi import FastAPI
-import os, httpx
+from fastapi import FastAPI, Query
+import os
+import httpx
 from starlette.responses import Response
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 import sys
 import tenacity
+import requests
+
 load_dotenv()
 
+# CREATE THE APP FIRST!
+app = FastAPI(title="Crypto Pricing Forecast — CLEAN v1")
+
+# THEN ADD CORS MIDDLEWARE
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -36,16 +43,17 @@ SYMBOL_TO_CGID = {
     "sol": "solana",
     "usdt": "tether",
     "usdc": "usd-coin",
-    "ada": "cardano",  # CoinGecko ID
-    "dai": "dai"      # Fallback for ADA
+    "ada": "cardano",
+    "dai": "dai"
 }
+
+@app.get("/")
+def root():
+    return {"message": "Crypto Pricing API is running"}
 
 @app.get("/__routes__")
 def list_routes():
     return [r.path for r in app.routes]
-
-import requests
-from fastapi import Query
 
 @app.get("/debug/coinbase/top")
 def debug_top_of_book(product_id: str = Query("ETH-USD")):
@@ -80,12 +88,12 @@ def debug_coinbase_levels(product_id: str = "ETH-USD", levels: int = 5):
 
 TOKEN_MAPPINGS = {
     "ETH": {"symbol": "ETH", "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", "decimals": 18},
-    "WETH": {"symbol": "WETH", "address": "0xC02aaA39b223FE8D0A0e5C4f27eAD9083C756Cc2", "decimals": 18},
+    "WETH": {"symbol": "WETH", "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", "decimals": 18},
     "USDC": {"symbol": "USDC", "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "decimals": 6},
     "USDT": {"symbol": "USDT", "address": "0xdAC17F958D2ee523a2206206994597C13D831ec7", "decimals": 6},
     "BTC": {"symbol": "WBTC", "address": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599", "decimals": 8},
     "SOL": {"symbol": "SOL", "address": "0xD31a59c85aE9D8edEFeC411D448f90841571b89c", "decimals": 9},
-    "ADA": {"symbol": "DAI", "address": "0x6B175474E89094C44Da98b954EedeAC495271d0F", "decimals": 18},  # Fallback to DAI
+    "ADA": {"symbol": "DAI", "address": "0x6B175474E89094C44Da98b954EedeAC495271d0F", "decimals": 18},
     "DAI": {"symbol": "DAI", "address": "0x6B175474E89094C44Da98b954EedeAC495271d0F", "decimals": 18}
 }
 
@@ -189,23 +197,26 @@ async def fees_eth():
         return r.json()
 
 @app.get("/price/spot")
-async def get_spot_price(symbol: str = Query(None), coin: str = Query(None)):
+async def get_spot_price(symbol: str = Query(None), coin: str = Query(None), fiat: str = "usd"):
     # Accept both 'symbol' and 'coin' parameters
     crypto = symbol or coin or 'ethereum'
-    key = os.getenv("COINGECKO_API_KEY", "").strip()
-    cg_id = SYMBOL_TO_CGID.get(symbol.lower(), symbol.lower())
-    if cg_id not in SYMBOL_TO_CGID.values():
-        return {"error": f"Unsupported symbol: {symbol}"}
+    crypto = crypto.lower()
     
+    cg_id = SYMBOL_TO_CGID.get(crypto, crypto)
+    if cg_id not in SYMBOL_TO_CGID.values():
+        return {"error": f"Unsupported symbol: {crypto}"}
+    
+    key = os.getenv("COINGECKO_API_KEY", "").strip()
     headers = {"x-cg-demo-api-key": key, "x-cg-pro-api-key": key} if key else {}
     url = f"https://api.coingecko.com/api/v3/simple/price?ids={cg_id}&vs_currencies={fiat.lower()}"
+    
     async with httpx.AsyncClient(timeout=10, headers=headers) as client:
         r = await client.get(url)
         r.raise_for_status()
         data = r.json()
         price = data.get(cg_id, {}).get(fiat.lower())
         if price is None:
-            return {"error": f"No price data for {symbol} in {fiat}"}
+            return {"error": f"No price data for {crypto} in {fiat}"}
         return {"coin": cg_id, "fiat": fiat.lower(), "price": price}
 
 @app.get("/orderbook/coinbase")
@@ -264,12 +275,13 @@ async def simulate_coinbase_buy(product_id: str = "ETH-USD", amount: float = 0.8
 async def best_price(symbol: str = "eth"):
     print("Processing /best_price request for symbol:", symbol, file=sys.stderr)
     try:
-        spot_response = await price_spot(symbol=symbol, fiat="usd")
+        spot_response = await get_spot_price(symbol=symbol, fiat="usd")
         if "error" in spot_response:
             print("Error in spot_response:", spot_response, file=sys.stderr)
             return {"error": "Unable to fetch best price"}
         spot_price = spot_response["price"]
         print("Successfully fetched spot price:", spot_price, file=sys.stderr)
+        
         dex_response = await paraswap_quote(sell_token="USDC", buy_token=symbol.upper(), amount=10000.0)
         if "error" in dex_response:
             print("Error in dex_response:", dex_response, file=sys.stderr)
@@ -282,12 +294,14 @@ async def best_price(symbol: str = "eth"):
             else:
                 dex_price = None
                 print("Invalid destAmount in dex_response", file=sys.stderr)
+        
         if dex_price:
             best = min(spot_price, dex_price)
             venue = "CoinGecko" if spot_price < dex_price else "ParaSwap"
         else:
             best = spot_price
             venue = "CoinGecko"
+        
         return {
             "best_price": {
                 "venue": venue,
@@ -305,9 +319,11 @@ async def get_price_history(symbol: str, days: int = 7, fiat: str = "usd"):
     cg_id = SYMBOL_TO_CGID.get(symbol.lower(), symbol.lower())
     if cg_id not in SYMBOL_TO_CGID.values():
         return {"error": f"Unsupported symbol: {symbol}"}
+    
     key = os.getenv("COINGECKO_API_KEY", "").strip()
     headers = {"x-cg-demo-api-key": key, "x-cg-pro-api-key": key} if key else {}
     url = f"https://api.coingecko.com/api/v3/coins/{cg_id}/market_chart?vs_currency={fiat.lower()}&days={days}"
+    
     async with httpx.AsyncClient(timeout=10, headers=headers) as client:
         r = await client.get(url)
         r.raise_for_status()
