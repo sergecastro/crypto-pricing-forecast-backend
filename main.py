@@ -7,13 +7,12 @@ import sys
 import tenacity
 load_dotenv()
 
-app = FastAPI(title="Crypto Pricing Forecast — CLEAN v1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "http://localhost:5174",
-        "https://cryptopricer.netlify.app",  # Add your Netlify URL
+        "https://cryptopricer.netlify.app"
     ],
     allow_credentials=True,
     allow_methods=["*"],
