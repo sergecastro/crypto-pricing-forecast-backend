@@ -14,7 +14,6 @@ app.add_middleware(
         "http://localhost:5173",
         "http://localhost:5174",
         "https://cryptopricer.netlify.app",  # Add your Netlify URL
-        "https://*.netlify.app"  # Allow all Netlify previews
     ],
     allow_credentials=True,
     allow_methods=["*"],
