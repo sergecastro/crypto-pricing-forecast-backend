@@ -342,7 +342,6 @@ async def get_price_history(
     days: int = Query(7, description="Allowed: 1, 7, 30, 90"),
     fiat: str = "usd",
 ):
-    # keep requests predictable and lighter
     allowed = {1, 7, 30, 90}
     if days not in allowed:
         days = 7
@@ -357,35 +356,38 @@ async def get_price_history(
     base_pro = "https://pro-api.coingecko.com/api/v3"
     base_pub = "https://api.coingecko.com/api/v3"
 
-    async def fetch_once(base_url: str, use_pro_header: bool):
+    async def fetch_once(base_url: str, mode: str):
         url = f"{base_url}/coins/{cg_id}/market_chart"
-        # IMPORTANT: send exactly one header, not both
+        # IMPORTANT: send exactly one header (and only if a key exists)
         headers = {}
         if key:
-            headers = {"x-cg-pro-api-key": key} if use_pro_header else {"x-cg-demo-api-key": key}
+            headers = {"x-cg-pro-api-key": key} if mode == "pro" else {"x-cg-demo-api-key": key}
         async with httpx.AsyncClient(timeout=20) as client:
             r = await client.get(url, params=params, headers=headers)
-        return r, url
+        return r, url, mode
 
     try:
-        # If a key exists, try PRO first with pro header
+        url_used = "unknown"
+        mode_used = "none"
+
         if key:
-            r, url_used = await fetch_once(base_pro, use_pro_header=True)
+            # Try PRO first
+            r, url_used, mode_used = await fetch_once(base_pro, "pro")
             if r.status_code == 400:
                 txt = r.text or ""
-                # Demo key must use public base
+                # If it says "Demo API key must use public", switch to public
                 if 'Demo API key' in txt or '"error_code":10011' in txt:
-                    r, url_used = await fetch_once(base_pub, use_pro_header=False)
+                    r, url_used, mode_used = await fetch_once(base_pub, "public")
         else:
-            # No key: use public with no headers
-            r, url_used = await fetch_once(base_pub, use_pro_header=False)
+            # No key: public without headers
+            r, url_used, mode_used = await fetch_once(base_pub, "public")
 
         if r.status_code != 200:
             return {
                 "error": "coingecko_error",
                 "status": r.status_code,
                 "body": r.text,
-                "requested": {"url": url_used, "params": params},
+                "requested": {"url": url_used, "params": params, "mode": mode_used},
             }
 
         data = r.json()
@@ -400,8 +402,11 @@ async def get_price_history(
     return {
         "coin": cg_id,
         "fiat": fiat.lower(),
-        "prices": data.get("prices", []),  # [ [timestamp_ms, price], ... ]
+        "mode": mode_used,         # <-- tells us which base/header was used
+        "source_url": url_used,    # <-- exact URL used
+        "prices": data.get("prices", []),
     }
+
 
 
 
