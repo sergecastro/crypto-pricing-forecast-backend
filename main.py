@@ -36,16 +36,38 @@ async def _print_routes_on_startup():
         print("🔎 Registered routes:", [r.path for r in app.routes])
     except Exception as e:
         print("Route print error:", e)
+        
+        
 
 SYMBOL_TO_CGID = {
+    # core
     "btc": "bitcoin",
     "eth": "ethereum",
     "sol": "solana",
     "usdt": "tether",
     "usdc": "usd-coin",
     "ada": "cardano",
-    "dai": "dai"
+    "dai": "dai",
+
+    # NEW coins + common aliases
+    "matic": "polygon-ecosystem-token",   # MATIC
+    "matic-network": "polygon-ecosystem-token",
+
+    "avax": "avalanche-2",                # AVAX
+    "avalanche-2": "avalanche-2",
+
+    "dot": "polkadot",                    # DOT
+    "polkadot": "polkadot",
+
+    "link": "chainlink",                  # LINK
+    "chainlink": "chainlink",
+
+    "uni": "uniswap",                     # UNI
+    "uniswap": "uniswap",
 }
+
+
+
 
 @app.get("/")
 def root():
@@ -315,21 +337,47 @@ async def best_price(symbol: str = "eth"):
         return {"error": f"Server error: {str(e)}"}
     
 @app.get("/history/{symbol}")
-async def get_price_history(symbol: str, days: int = 7, fiat: str = "usd"):
+async def get_price_history(
+    symbol: str,
+    days: int = Query(7, description="Allowed: 1, 7, 30, 90"),
+    fiat: str = "usd",
+):
+    # keep requests predictable and lighter
+    allowed = {1, 7, 30, 90}
+    if days not in allowed:
+        days = 7
+
     cg_id = SYMBOL_TO_CGID.get(symbol.lower(), symbol.lower())
     if cg_id not in SYMBOL_TO_CGID.values():
         return {"error": f"Unsupported symbol: {symbol}"}
-    
+
     key = os.getenv("COINGECKO_API_KEY", "").strip()
     headers = {"x-cg-demo-api-key": key, "x-cg-pro-api-key": key} if key else {}
-    url = f"https://api.coingecko.com/api/v3/coins/{cg_id}/market_chart?vs_currency={fiat.lower()}&days={days}"
-    
-    async with httpx.AsyncClient(timeout=10, headers=headers) as client:
-        r = await client.get(url)
-        r.raise_for_status()
-        data = r.json()
+
+    url = "https://api.coingecko.com/api/v3/coins/{id}/market_chart".format(id=cg_id)
+    params = {"vs_currency": fiat.lower(), "days": str(days)}
+
+    try:
+        async with httpx.AsyncClient(timeout=20, headers=headers) as client:
+            r = await client.get(url, params=params)
+            if r.status_code != 200:
+                # expose details so we can see what's wrong (rate limit, auth, etc.)
+                return {
+                    "error": "coingecko_error",
+                    "status": r.status_code,
+                    "body": r.text,
+                    "requested": {"url": url, "params": params},
+                }
+            data = r.json()
+    except Exception as e:
         return {
-            "coin": cg_id,
-            "fiat": fiat.lower(),
-            "prices": data.get("prices", [])  # List of [timestamp_ms, price]
+            "error": "request_failed",
+            "detail": str(e),
+            "requested": {"url": url, "params": params},
         }
+
+    return {
+        "coin": cg_id,
+        "fiat": fiat.lower(),
+        "prices": data.get("prices", []),
+    }
