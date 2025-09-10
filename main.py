@@ -352,32 +352,61 @@ async def get_price_history(
         return {"error": f"Unsupported symbol: {symbol}"}
 
     key = os.getenv("COINGECKO_API_KEY", "").strip()
-    headers = {"x-cg-demo-api-key": key, "x-cg-pro-api-key": key} if key else {}
-
-    url = "https://api.coingecko.com/api/v3/coins/{id}/market_chart".format(id=cg_id)
     params = {"vs_currency": fiat.lower(), "days": str(days)}
 
+    base_pro = "https://pro-api.coingecko.com/api/v3"
+    base_pub = "https://api.coingecko.com/api/v3"
+
+    async def fetch_once(base_url: str, use_pro_header: bool):
+        url = f"{base_url}/coins/{cg_id}/market_chart"
+        # IMPORTANT: send exactly one header, not both
+        headers = {}
+        if key:
+            headers = {"x-cg-pro-api-key": key} if use_pro_header else {"x-cg-demo-api-key": key}
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(url, params=params, headers=headers)
+        return r, url
+
     try:
-        async with httpx.AsyncClient(timeout=20, headers=headers) as client:
-            r = await client.get(url, params=params)
-            if r.status_code != 200:
-                # expose details so we can see what's wrong (rate limit, auth, etc.)
-                return {
-                    "error": "coingecko_error",
-                    "status": r.status_code,
-                    "body": r.text,
-                    "requested": {"url": url, "params": params},
-                }
-            data = r.json()
+        # If a key exists, try PRO first with pro header
+        if key:
+            r, url_used = await fetch_once(base_pro, use_pro_header=True)
+            if r.status_code == 400:
+                txt = r.text or ""
+                # Demo key must use public base
+                if 'Demo API key' in txt or '"error_code":10011' in txt:
+                    r, url_used = await fetch_once(base_pub, use_pro_header=False)
+        else:
+            # No key: use public with no headers
+            r, url_used = await fetch_once(base_pub, use_pro_header=False)
+
+        if r.status_code != 200:
+            return {
+                "error": "coingecko_error",
+                "status": r.status_code,
+                "body": r.text,
+                "requested": {"url": url_used, "params": params},
+            }
+
+        data = r.json()
+
     except Exception as e:
         return {
             "error": "request_failed",
             "detail": str(e),
-            "requested": {"url": url, "params": params},
+            "requested": {"url": "unknown", "params": params},
         }
 
     return {
         "coin": cg_id,
         "fiat": fiat.lower(),
-        "prices": data.get("prices", []),
+        "prices": data.get("prices", []),  # [ [timestamp_ms, price], ... ]
     }
+
+
+
+
+
+
+
+
