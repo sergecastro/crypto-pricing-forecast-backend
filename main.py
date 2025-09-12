@@ -64,6 +64,8 @@ SYMBOL_TO_CGID = {
 
     "uni": "uniswap",                     # UNI
     "uniswap": "uniswap",
+
+    "etc": "ethereum-classic",            # ETC - Ethereum Classic
 }
 
 
