@@ -7,8 +7,6 @@ from fastapi.middleware.cors import CORSMiddleware
 import sys
 import tenacity
 import requests
-import time
-from typing import Dict, Any, Optional
 
 load_dotenv()
 
@@ -24,80 +22,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ===============================
-# MICRO-CACHE IMPLEMENTATION
-# ===============================
-
-class HistoryCache:
-    def __init__(self, ttl_seconds: int = 45):
-        self.cache: Dict[str, Dict[str, Any]] = {}
-        self.ttl = ttl_seconds
-    
-    def _generate_key(self, symbol: str, days: int, fiat: str = "usd") -> str:
-        return f"{symbol.lower()}_{days}_{fiat.lower()}"
-    
-    def get(self, symbol: str, days: int, fiat: str = "usd") -> Optional[Dict[str, Any]]:
-        key = self._generate_key(symbol, days, fiat)
-        if key in self.cache:
-            entry = self.cache[key]
-            # Check if cache entry is still valid
-            if time.time() - entry["timestamp"] < self.ttl:
-                print(f"Cache HIT for {key}", file=sys.stderr)
-                return entry["data"]
-            else:
-                # Remove expired entry
-                del self.cache[key]
-                print(f"Cache EXPIRED for {key}", file=sys.stderr)
-        
-        print(f"Cache MISS for {key}", file=sys.stderr)
-        return None
-    
-    def set(self, symbol: str, days: int, data: Dict[str, Any], fiat: str = "usd") -> None:
-        key = self._generate_key(symbol, days, fiat)
-        self.cache[key] = {
-            "data": data,
-            "timestamp": time.time()
-        }
-        print(f"Cache SET for {key}", file=sys.stderr)
-        
-        # Cleanup old entries (simple cleanup strategy)
-        self._cleanup_expired()
-    
-    def _cleanup_expired(self) -> None:
-        """Remove expired entries to prevent memory buildup"""
-        current_time = time.time()
-        expired_keys = [
-            key for key, entry in self.cache.items() 
-            if current_time - entry["timestamp"] > self.ttl
-        ]
-        for key in expired_keys:
-            del self.cache[key]
-        
-        if expired_keys:
-            print(f"Cache CLEANUP: Removed {len(expired_keys)} expired entries", file=sys.stderr)
-    
-    def clear(self) -> None:
-        """Clear all cache entries"""
-        self.cache.clear()
-        print("Cache CLEARED", file=sys.stderr)
-    
-    def stats(self) -> Dict[str, Any]:
-        """Get cache statistics"""
-        current_time = time.time()
-        valid_entries = sum(
-            1 for entry in self.cache.values() 
-            if current_time - entry["timestamp"] < self.ttl
-        )
-        return {
-            "total_entries": len(self.cache),
-            "valid_entries": valid_entries,
-            "expired_entries": len(self.cache) - valid_entries,
-            "ttl_seconds": self.ttl
-        }
-
-# Initialize cache instance
-history_cache = HistoryCache(ttl_seconds=45)  # 45-second cache
-
 # Debug CORS
 @app.middleware("http")
 async def debug_cors(request, call_next):
@@ -110,10 +34,11 @@ async def debug_cors(request, call_next):
 async def _print_routes_on_startup():
     try:
         print("🔎 Registered routes:", [r.path for r in app.routes])
-        print("💾 History cache initialized with 45s TTL", file=sys.stderr)
     except Exception as e:
         print("Route print error:", e)
         
+        
+
 SYMBOL_TO_CGID = {
     # core
     "btc": "bitcoin",
@@ -141,6 +66,9 @@ SYMBOL_TO_CGID = {
     "uniswap": "uniswap",
 }
 
+
+
+
 @app.get("/")
 def root():
     return {"message": "Crypto Pricing API is running"}
@@ -148,16 +76,6 @@ def root():
 @app.get("/__routes__")
 def list_routes():
     return [r.path for r in app.routes]
-
-# New cache management endpoints
-@app.get("/cache/stats")
-def cache_stats():
-    return history_cache.stats()
-
-@app.post("/cache/clear")
-def clear_cache():
-    history_cache.clear()
-    return {"message": "Cache cleared successfully"}
 
 @app.get("/debug/coinbase/top")
 def debug_top_of_book(product_id: str = Query("ETH-USD")):
@@ -417,7 +335,7 @@ async def best_price(symbol: str = "eth"):
     except Exception as e:
         print(f"Error in /best_price: {str(e)}", file=sys.stderr)
         return {"error": f"Server error: {str(e)}"}
-
+    
 @app.get("/history/{symbol}")
 async def get_price_history(
     symbol: str,
@@ -432,19 +350,6 @@ async def get_price_history(
     if cg_id not in SYMBOL_TO_CGID.values():
         return {"error": f"Unsupported symbol: {symbol}"}
 
-    # ===========================
-    # CHECK CACHE FIRST
-    # ===========================
-    cached_result = history_cache.get(symbol.lower(), days, fiat.lower())
-    if cached_result:
-        # Add cache indicator to response
-        cached_result["cached"] = True
-        cached_result["cache_timestamp"] = time.time()
-        return cached_result
-
-    # ===========================
-    # CACHE MISS - FETCH FROM API
-    # ===========================
     key = os.getenv("COINGECKO_API_KEY", "").strip()
     params = {"vs_currency": fiat.lower(), "days": str(days)}
 
@@ -494,20 +399,19 @@ async def get_price_history(
             "requested": {"url": "unknown", "params": params},
         }
 
-    # Prepare response
-    response_data = {
+    return {
         "coin": cg_id,
         "fiat": fiat.lower(),
-        "mode": mode_used,
-        "source_url": url_used,
+        "mode": mode_used,         # <-- tells us which base/header was used
+        "source_url": url_used,    # <-- exact URL used
         "prices": data.get("prices", []),
-        "cached": False,
-        "fetch_timestamp": time.time()
     }
 
-    # ===========================
-    # STORE IN CACHE
-    # ===========================
-    history_cache.set(symbol.lower(), days, response_data, fiat.lower())
 
-    return response_data
+
+
+
+
+
+
+
